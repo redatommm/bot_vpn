@@ -1,0 +1,25 @@
+run = "python3 main_bot.py"
+hidden = [".config", "package.json", "package-lock.json"]
+entrypoint = "main_bot.py"
+
+[nix]
+channel = "stable-22_11"
+
+[env]
+PYTHONPATH = "${PYTHONPATH}:${REPL_HOME}"
+
+[packager]
+language = "python3"
+ignoredPackages = ["unit_tests"]
+
+[packager.features]
+packageSearch = true
+guessImports = true
+enabledForHosting = false
+
+[languages.python]
+pattern = "**/{*.py,*.pyw}"
+syntax = "python"
+
+[languages.python.languageServer]
+start = "pylsp" 
