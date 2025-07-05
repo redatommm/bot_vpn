@@ -34,7 +34,9 @@ class DatabaseManager:
                 subscription_status TEXT DEFAULT 'Пробная',
                 subscription_end TEXT DEFAULT NULL,
                 trial_end TEXT DEFAULT NULL,
-                devices_connected INTEGER DEFAULT 1
+                devices_connected INTEGER DEFAULT 1,
+                openvpn_expires TEXT DEFAULT NULL,
+                vless_expires TEXT DEFAULT NULL
             )
             """)
             conn.commit()
@@ -80,6 +82,74 @@ class DatabaseManager:
         )
         self.conn.commit()
         logger.info(f"Добавлен новый пользователь: {user_id} с пробным периодом до {trial_end}")
+    
+    def set_config_expires(self, user_id: int, config_type: str, days: int = 3):
+        """Установка срока действия конфига"""
+        expires = (datetime.now() + timedelta(days=days)).strftime('%Y-%m-%d %H:%M:%S')
+        cursor = self.conn.cursor()
+        
+        if config_type == 'openvpn':
+            cursor.execute("UPDATE users SET openvpn_expires = ? WHERE user_id = ?", (expires, user_id))
+        elif config_type == 'vless':
+            cursor.execute("UPDATE users SET vless_expires = ? WHERE user_id = ?", (expires, user_id))
+        
+        self.conn.commit()
+        logger.info(f"Установлен срок действия {config_type} конфига для {user_id} до {expires}")
+    
+    def check_config_expired(self, user_id: int, config_type: str) -> bool:
+        """Проверка истечения срока действия конфига"""
+        cursor = self.conn.cursor()
+        
+        if config_type == 'openvpn':
+            cursor.execute("SELECT openvpn_expires FROM users WHERE user_id = ?", (user_id,))
+        elif config_type == 'vless':
+            cursor.execute("SELECT vless_expires FROM users WHERE user_id = ?", (user_id,))
+        else:
+            return True
+        
+        result = cursor.fetchone()
+        if not result or not result[0]:
+            return True  # Нет срока = истек
+        
+        expires = datetime.strptime(result[0], '%Y-%m-%d %H:%M:%S')
+        return datetime.now() > expires
+    
+    def cleanup_expired_configs(self):
+        """Очистка истекших конфигов"""
+        try:
+            from vpn_config_generator import vpn_generator
+            
+            cursor = self.conn.cursor()
+            cursor.execute("""
+                SELECT user_id, openvpn_expires, vless_expires 
+                FROM users 
+                WHERE openvpn_expires IS NOT NULL OR vless_expires IS NOT NULL
+            """)
+            users = cursor.fetchall()
+            
+            for user in users:
+                user_id, openvpn_expires, vless_expires = user
+                
+                # Проверяем OpenVPN
+                if openvpn_expires:
+                    expires = datetime.strptime(openvpn_expires, '%Y-%m-%d %H:%M:%S')
+                    if datetime.now() > expires:
+                        vpn_generator.revoke_user_config(user_id)
+                        cursor.execute("UPDATE users SET openvpn_expires = NULL WHERE user_id = ?", (user_id,))
+                        logger.info(f"Отозван истекший OpenVPN конфиг для {user_id}")
+                
+                # Проверяем VLESS
+                if vless_expires:
+                    expires = datetime.strptime(vless_expires, '%Y-%m-%d %H:%M:%S')
+                    if datetime.now() > expires:
+                        vpn_generator.revoke_user_config(user_id)
+                        cursor.execute("UPDATE users SET vless_expires = NULL WHERE user_id = ?", (user_id,))
+                        logger.info(f"Отозван истекший VLESS конфиг для {user_id}")
+            
+            self.conn.commit()
+            
+        except Exception as e:
+            logger.error(f"Ошибка при очистке истекших конфигов: {e}")
 
 # Инициализация базы данных
 DB_PATH = os.path.join(os.path.dirname(__file__), 'vpn_users.db')
